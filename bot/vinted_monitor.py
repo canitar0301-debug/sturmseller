@@ -38,28 +38,44 @@ class VintedMonitor:
       with open(self.seen_items_file, "w", encoding="utf-8") as f:
         json.dump(list(self.seen_items), f, ensure_ascii=False)
     except Exception as e:
-        logger.error(f"Ошибка сохранения {self.seen_items_file}: {e}")
+      logger.error(f"Ошибка сохранения {self.seen_items_file}: {e}")
 
   async def check_updates(self):
     for url in self.search_urls:
       try:
-        items = self.parser.fetch_items(url)
+        items, search_text = self.parser.fetch_items(url)
+        search_words = (
+            [w.lower() for w in search_text.replace("%20", " ").split()]
+            if search_text
+            else []
+        )
+
         for item in items:
           item_id = str(item["id"])
           if item_id not in self.seen_items:
             self.seen_items.add(item_id)
+
+            title_and_brand = (
+                f"{item['title']} {item.get('brand', '')}".lower()
+            )
+
+            # Проверка: все ли слова из поиска присутствуют в названии/бренде
+            if search_words and not all(
+                word in title_and_brand for word in search_words
+            ):
+              continue
 
             price_rub = self.currency_converter.convert(
                 item["price"], item["currency"]
             )
             text = (
                 f"<b>{item['title'].upper()}</b>\n\n"
-                f"💰 Цена: {item['price']} {item['currency']} (~{price_rub} RUB)\n"
+                f"💰 Цена: {item['price']} {item['currency']} (~{price_rub}"
+                " RUB)\n"
                 f"📏 Размер: {item.get('size', 'N/A')}\n"
                 f"🏷 Бренд: {item.get('brand', 'N/A')}"
             )
 
-            # Вызов функции отправки через await
             await self.bot.send_message(
                 text=text,
                 image_url=item.get("photo_url"),

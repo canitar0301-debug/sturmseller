@@ -16,15 +16,25 @@ class VintedParser:
     params = parse_qs(parsed.query)
     return domain, params
 
-  def fetch_items(self, search_url: str) -> list:
+  def fetch_items(self, search_url: str) -> tuple[list, str]:
     domain, params = self._get_domain_and_params(search_url)
 
-    api_params = {}
+    # Приводим параметры браузера к формату Vinted API
+    api_params = {"order": "newest_first"}
+
+    search_text = ""
     for k, v in params.items():
-      if k.endswith("[]"):
-        api_params[k] = v
+      val = v[0] if v else ""
+      if k == "search_text":
+        search_text = val
+        api_params["search_text"] = val
+      elif k in ["catalog[]", "catalog"]:
+        api_params["catalog_ids"] = ",".join(v)
+      elif k.endswith("[]"):
+        clean_key = k[:-2] + "_ids"
+        api_params[clean_key] = ",".join(v)
       else:
-        api_params[k] = v[0] if v else ""
+        api_params[k] = val
 
     api_url = f"https://{domain}/api/v2/catalog/items"
     headers = {
@@ -62,10 +72,10 @@ class VintedParser:
                   else None
               ),
           })
-        return parsed_items
+        return parsed_items, search_text
       else:
         logger.error(f"Ошибка Vinted API ({response.status_code})")
-        return []
+        return [], search_text
     except Exception as e:
       logger.error(f"Ошибка парсинга Vinted ({search_url}): {e}")
-      return []
+      return [], search_text
