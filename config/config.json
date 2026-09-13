@@ -1,0 +1,15 @@
+{
+  "token": "8793321400:AAG7tbgeX4Y1SF6kHM_tqnNdwgVYIh07Svs",
+  "channel_ids": [
+    "724824704",
+    "414822553",
+    "5234636281"
+  ],
+  "search_urls": [
+    "https://www.vinted.pl/catalog?search_text=thor%20steinar&catalog[]=5",
+    "https://www.vinted.pl/catalog?search_text=thor%20steinar&catalog[]=1904",
+    "https://www.vinted.de/catalog?search_text=thor%20steinar&catalog[]=1904",
+    "https://www.vinted.de/catalog?search_text=thor%20steinar&catalog[]=5"
+  ],
+  "refresh_delay": 2
+}
