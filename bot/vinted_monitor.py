@@ -1,9 +1,6 @@
 import asyncio
-import json
 import logging
-import os
-from bot.currency_converter import CurrencyConverter
-from bot.telegram_bot import TelegramBot
+import aiohttp
 from bot.vinted_parser import VintedParser
 
 logger = logging.getLogger(__name__)
@@ -11,82 +8,109 @@ logger = logging.getLogger(__name__)
 
 class VintedMonitor:
 
-  def __init__(self, config_path: str = "config.json"):
-    with open(config_path, "r", encoding="utf-8") as f:
-      self.config = json.load(f)
-
-    self.bot = TelegramBot(self.config["token"], self.config["channel_ids"])
+  def __init__(self, bot, config):
+    self.bot = bot
+    self.config = config
     self.parser = VintedParser()
-    self.currency_converter = CurrencyConverter()
-    self.refresh_delay = self.config.get("refresh_delay", 2)
-    self.search_urls = self.config.get("search_urls", [])
+    self.seen_items = set()
+    self.rates = {"EUR": 100.0, "PLN": 23.0}
 
-    self.seen_items_file = "seen_items.json"
-    self.seen_items = self._load_seen_items()
-
-  def _load_seen_items(self):
-    if os.path.exists(self.seen_items_file):
-      try:
-        with open(self.seen_items_file, "r", encoding="utf-8") as f:
-          return set(json.load(f))
-      except Exception as e:
-        logger.error(f"Ошибка чтения {self.seen_items_file}: {e}")
-    return set()
-
-  def _save_seen_items(self):
+  async def update_rates(self):
+    """Получение актуальных курсов валют к рублю."""
     try:
-      with open(self.seen_items_file, "w", encoding="utf-8") as f:
-        json.dump(list(self.seen_items), f, ensure_ascii=False)
+      async with aiohttp.ClientSession() as session:
+        async with session.get(
+            "https://www.cbr-xml-daily.ru/daily_json.js", timeout=10
+        ) as resp:
+          if resp.status == 200:
+            data = await resp.json(content_type=None)
+            valute = data.get("Valute", {})
+            if "EUR" in valute:
+              self.rates["EUR"] = float(valute["EUR"]["Value"])
+            if "PLN" in valute:
+              self.rates["PLN"] = float(valute["PLN"]["Value"]) / float(
+                  valute["PLN"]["Nominal"]
+              )
+            logger.info(f"Обновлены курсы валют: {self.rates}")
     except Exception as e:
-      logger.error(f"Ошибка сохранения {self.seen_items_file}: {e}")
+      logger.warning(
+          f"Не удалось обновить курсы валют, используются стандартные: {e}"
+      )
 
-  async def check_updates(self):
-    for url in self.search_urls:
-      try:
-        items, search_text = self.parser.fetch_items(url)
-        search_words = (
-            [w.lower() for w in search_text.replace("%20", " ").split()]
-            if search_text
-            else []
-        )
-
-        for item in items:
-          item_id = str(item["id"])
-          if item_id not in self.seen_items:
-            self.seen_items.add(item_id)
-
-            title_and_brand = (
-                f"{item['title']} {item.get('brand', '')}".lower()
-            )
-
-            # Проверка: все ли слова из поиска присутствуют в названии/бренде
-            if search_words and not all(
-                word in title_and_brand for word in search_words
-            ):
-              continue
-
-            price_rub = self.currency_converter.convert(
-                item["price"], item["currency"]
-            )
-            text = (
-                f"<b>{item['title'].upper()}</b>\n\n"
-                f"💰 Цена: {item['price']} {item['currency']} (~{price_rub}"
-                " RUB)\n"
-                f"📏 Размер: {item.get('size', 'N/A')}\n"
-                f"🏷 Бренд: {item.get('brand', 'N/A')}"
-            )
-
-            await self.bot.send_message(
-                text=text,
-                image_url=item.get("photo_url"),
-                product_url=item.get("url"),
-            )
-        self._save_seen_items()
-      except Exception as e:
-        logger.error(f"Ошибка обработки ссылки {url}: {e}")
+  def convert_to_rub(self, price_str: str, currency: str) -> float:
+    try:
+      amount = float(price_str)
+      rate = self.rates.get(currency.upper(), self.rates["EUR"])
+      return round(amount * rate, 2)
+    except Exception:
+      return 0.0
 
   async def start(self):
     logger.info("Запуск мониторинга Vinted...")
+    await self.update_rates()
+
+    rate_update_counter = 0
+
     while True:
-      await self.check_updates()
-      await asyncio.sleep(self.refresh_delay)
+      try:
+        search_urls = self.config.get("search_urls", [])
+        channel_ids = self.config.get("channel_ids", [])
+        delay = self.config.get("refresh_delay", 5)
+
+        for url in search_urls:
+          # Запуск парсинга в синхронном потоке для curl_cffi
+          items, search_text = await asyncio.to_thread(
+              self.parser.fetch_items, url
+          )
+
+          for item in items:
+            item_id = item["id"]
+            if not item_id or item_id in self.seen_items:
+              continue
+
+            self.seen_items.add(item_id)
+
+            # Формирование карточки
+            price_rub = self.convert_to_rub(
+                item["price"], item["currency"]
+            )
+            caption = (
+                f"👕 <b>{item['title']}</b>\n\n"
+                f"🏷 <b>Бренд:</b> {item['brand']}\n"
+                f"📏 <b>Размер:</b> {item['size']}\n"
+                f"💰 <b>Цена:</b> {item['price']} {item['currency']} (~{price_rub} RUB)\n\n"
+                f"🔗 <a href='{item['url']}'>Открыть на Vinted</a>"
+            )
+
+            for channel_id in channel_ids:
+              try:
+                if item["photo_url"]:
+                  await self.bot.send_photo(
+                      chat_id=channel_id,
+                      photo=item["photo_url"],
+                      caption=caption,
+                      parse_mode="HTML",
+                  )
+                else:
+                  await self.bot.send_message(
+                      chat_id=channel_id,
+                      text=caption,
+                      parse_mode="HTML",
+                      disable_web_page_preview=False,
+                  )
+              except Exception as send_err:
+                logger.error(
+                    f"Ошибка отправки сообщения в {channel_id}: {send_err}"
+                )
+
+          await asyncio.sleep(delay)
+
+        # Периодическое обновление курсов каждые ~100 циклов
+        rate_update_counter += 1
+        if rate_update_counter >= 100:
+          await self.update_rates()
+          rate_update_counter = 0
+
+      except Exception as e:
+        logger.error(f"Ошибка в цикле мониторинга: {e}")
+        await asyncio.sleep(10)
