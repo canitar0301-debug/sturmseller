@@ -9,15 +9,22 @@ logger = logging.getLogger(__name__)
 class VintedParser:
 
   def __init__(self):
-    # Раздельные сессии для каждого домена
+    # Изолированные сессии для каждого домена (.pl, .de и т.д.)
     self.sessions = {}
 
   def _get_token_from_session(self, session: requests.Session) -> str | None:
-    """Извлекает access_token_web из хранилища куки сессии."""
-    for cookie in session.cookies:
-      if cookie.name == "access_token_web":
-        return cookie.value
-    return None
+    """Извлекает access_token_web из словаря куки сессии."""
+    try:
+      cookies = session.cookies.get_dict()
+      if "access_token_web" in cookies:
+        return cookies["access_token_web"]
+    except Exception:
+      pass
+
+    try:
+      return session.cookies.get("access_token_web")
+    except Exception:
+      return None
 
   def _get_session(self, domain: str) -> requests.Session:
     if domain not in self.sessions:
@@ -36,8 +43,11 @@ class VintedParser:
         res = session.get(f"https://{domain}", headers=headers, timeout=25)
         token = self._get_token_from_session(session)
 
+        # Резервный поиск токена в HTML при отсутствии в куках
         if not token and res.text:
-          match = re.search(r'"token":"([^"]+)"', res.text)
+          match = re.search(r'"token":"([^"]+)"', res.text) or re.search(
+              r'"accessToken":"([^"]+)"', res.text
+          )
           if match:
             token = match.group(1)
 
@@ -48,6 +58,7 @@ class VintedParser:
       except Exception as e:
         logger.error(f"Ошибка инициализации сессии Vinted ({domain}): {e}")
         return session
+
     return self.sessions[domain]
 
   def _get_domain_and_params(self, url: str):
