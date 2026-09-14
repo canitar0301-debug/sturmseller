@@ -9,8 +9,15 @@ logger = logging.getLogger(__name__)
 class VintedParser:
 
   def __init__(self):
-    # Раздельные сессии для каждого домена (.pl, .de и т.д.)
+    # Раздельные сессии для каждого домена
     self.sessions = {}
+
+  def _get_token_from_session(self, session: requests.Session) -> str | None:
+    """Извлекает access_token_web из хранилища куки сессии."""
+    for cookie in session.cookies:
+      if cookie.name == "access_token_web":
+        return cookie.value
+    return None
 
   def _get_session(self, domain: str) -> requests.Session:
     if domain not in self.sessions:
@@ -27,7 +34,8 @@ class VintedParser:
       }
       try:
         res = session.get(f"https://{domain}", headers=headers, timeout=25)
-        token = session.cookies.get("access_token_web", domain=domain)
+        token = self._get_token_from_session(session)
+
         if not token and res.text:
           match = re.search(r'"token":"([^"]+)"', res.text)
           if match:
@@ -78,7 +86,7 @@ class VintedParser:
         "X-Requested-With": "XMLHttpRequest",
     }
 
-    token = session.cookies.get("access_token_web", domain=domain)
+    token = self._get_token_from_session(session)
     if token:
       headers["Authorization"] = f"Bearer {token}"
 
@@ -91,7 +99,7 @@ class VintedParser:
         if domain in self.sessions:
           del self.sessions[domain]
         session = self._get_session(domain)
-        token = session.cookies.get("access_token_web", domain=domain)
+        token = self._get_token_from_session(session)
         if token:
           headers["Authorization"] = f"Bearer {token}"
         response = session.get(
