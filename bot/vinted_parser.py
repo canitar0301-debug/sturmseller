@@ -46,9 +46,10 @@ class VintedParser:
     }
 
     try:
-      self.session.get(f"https://{domain}", headers=headers, timeout=10)
+        # Увеличиваем таймаут до 25 секунд
+      self.session.get(f"https://{domain}", headers=headers, timeout=25)
       response = self.session.get(
-          api_url, params=api_params, headers=headers, timeout=10
+        api_url, params=api_params, headers=headers, timeout=25
       )
 
       if response.status_code == 200:
