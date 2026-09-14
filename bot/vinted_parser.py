@@ -9,34 +9,38 @@ logger = logging.getLogger(__name__)
 class VintedParser:
 
   def __init__(self):
-    self.session = requests.Session(impersonate="chrome120")
-    self.domains_initialized = set()
+    # Раздельные сессии для каждого домена (.pl, .de и т.д.)
+    self.sessions = {}
 
-  def _init_session(self, domain: str):
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            " (KHTML, Gecko) Chrome/120.0.0.0 Safari/537.36"
-        ),
-        "Accept": (
-            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
-        ),
-        "Accept-Language": "en-US,en;q=0.9",
-    }
-    try:
-      res = self.session.get(f"https://{domain}", headers=headers, timeout=25)
-      token = self.session.cookies.get("access_token_web")
-      if not token and res.text:
-        match = re.search(r'"token":"([^"]+)"', res.text)
-        if match:
-          token = match.group(1)
+  def _get_session(self, domain: str) -> requests.Session:
+    if domain not in self.sessions:
+      session = requests.Session(impersonate="chrome120")
+      headers = {
+          "User-Agent": (
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+              " (KHTML, Gecko) Chrome/120.0.0.0 Safari/537.36"
+          ),
+          "Accept": (
+              "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+          ),
+          "Accept-Language": "en-US,en;q=0.9",
+      }
+      try:
+        res = session.get(f"https://{domain}", headers=headers, timeout=25)
+        token = session.cookies.get("access_token_web", domain=domain)
+        if not token and res.text:
+          match = re.search(r'"token":"([^"]+)"', res.text)
+          if match:
+            token = match.group(1)
 
-      if token:
-        self.session.headers["Authorization"] = f"Bearer {token}"
+        if token:
+          session.headers["Authorization"] = f"Bearer {token}"
 
-      self.domains_initialized.add(domain)
-    except Exception as e:
-      logger.error(f"Ошибка инициализации сессии Vinted ({domain}): {e}")
+        self.sessions[domain] = session
+      except Exception as e:
+        logger.error(f"Ошибка инициализации сессии Vinted ({domain}): {e}")
+        return session
+    return self.sessions[domain]
 
   def _get_domain_and_params(self, url: str):
     parsed = urlparse(url)
@@ -46,9 +50,7 @@ class VintedParser:
 
   def fetch_items(self, search_url: str) -> tuple[list, str]:
     domain, params = self._get_domain_and_params(search_url)
-
-    if domain not in self.domains_initialized:
-      self._init_session(domain)
+    session = self._get_session(domain)
 
     api_params = {"order": "newest_first"}
 
@@ -76,21 +78,23 @@ class VintedParser:
         "X-Requested-With": "XMLHttpRequest",
     }
 
-    token = self.session.cookies.get("access_token_web")
+    token = session.cookies.get("access_token_web", domain=domain)
     if token:
       headers["Authorization"] = f"Bearer {token}"
 
     try:
-      response = self.session.get(
+      response = session.get(
           api_url, params=api_params, headers=headers, timeout=25
       )
 
       if response.status_code in (401, 404):
-        self._init_session(domain)
-        token = self.session.cookies.get("access_token_web")
+        if domain in self.sessions:
+          del self.sessions[domain]
+        session = self._get_session(domain)
+        token = session.cookies.get("access_token_web", domain=domain)
         if token:
           headers["Authorization"] = f"Bearer {token}"
-        response = self.session.get(
+        response = session.get(
             api_url, params=api_params, headers=headers, timeout=25
         )
 
