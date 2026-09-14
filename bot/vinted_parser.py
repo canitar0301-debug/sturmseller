@@ -1,4 +1,5 @@
 import logging
+import re
 from urllib.parse import parse_qs, urlparse
 from curl_cffi import requests
 
@@ -9,6 +10,33 @@ class VintedParser:
 
   def __init__(self):
     self.session = requests.Session(impersonate="chrome120")
+    self.domains_initialized = set()
+
+  def _init_session(self, domain: str):
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            " (KHTML, Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": (
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    try:
+      res = self.session.get(f"https://{domain}", headers=headers, timeout=25)
+      token = self.session.cookies.get("access_token_web")
+      if not token and res.text:
+        match = re.search(r'"token":"([^"]+)"', res.text)
+        if match:
+          token = match.group(1)
+
+      if token:
+        self.session.headers["Authorization"] = f"Bearer {token}"
+
+      self.domains_initialized.add(domain)
+    except Exception as e:
+      logger.error(f"Ошибка инициализации сессии Vinted ({domain}): {e}")
 
   def _get_domain_and_params(self, url: str):
     parsed = urlparse(url)
@@ -19,7 +47,9 @@ class VintedParser:
   def fetch_items(self, search_url: str) -> tuple[list, str]:
     domain, params = self._get_domain_and_params(search_url)
 
-    # Приводим параметры браузера к формату Vinted API
+    if domain not in self.domains_initialized:
+      self._init_session(domain)
+
     api_params = {"order": "newest_first"}
 
     search_text = ""
@@ -43,14 +73,26 @@ class VintedParser:
             " (KHTML, Gecko) Chrome/120.0.0.0 Safari/537.36"
         ),
         "Accept": "application/json, text/plain, */*",
+        "X-Requested-With": "XMLHttpRequest",
     }
 
+    token = self.session.cookies.get("access_token_web")
+    if token:
+      headers["Authorization"] = f"Bearer {token}"
+
     try:
-        # Увеличиваем таймаут до 25 секунд
-      self.session.get(f"https://{domain}", headers=headers, timeout=25)
       response = self.session.get(
-        api_url, params=api_params, headers=headers, timeout=25
+          api_url, params=api_params, headers=headers, timeout=25
       )
+
+      if response.status_code in (401, 404):
+        self._init_session(domain)
+        token = self.session.cookies.get("access_token_web")
+        if token:
+          headers["Authorization"] = f"Bearer {token}"
+        response = self.session.get(
+            api_url, params=api_params, headers=headers, timeout=25
+        )
 
       if response.status_code == 200:
         data = response.json()
